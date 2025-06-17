@@ -1,159 +1,177 @@
-// server.js - O seu Microsserviço de Recursos
+// server.js - O seu Microsserviço de Recursos com Supabase (PostgreSQL via pg)
 
 const express = require('express');
+const { Pool } = require('pg'); // Importa o Pool de conexões do pg
+const { v4: uuidv4 } = require('uuid'); // Importa o gerador de UUID
 const app = express();
-// Usaremos uma porta diferente do Gateway, por exemplo, 4000
 const PORT = process.env.PORT || 4000;
 
-// --- Banco de Dados em Memória (Para Simulação) ---
-// Em uma aplicação real, aqui estariam os seus modelos e a conexão com o banco (MongoDB, PostgreSQL, etc.)
-let resources = [
-  { id: 1, name: "Item Inicial 1", description: "Este é o primeiro item.", stock: 100 },
-  { id: 2, name: "Item Inicial 2", description: "Este é o segundo item.", stock: 50 },
-  { id: 3, name: "Item a ser atualizado", description: "Descrição original.", stock: 25 }
-];
-let nextId = 4; // Para simular o auto-incremento de IDs
+// --- Conexão com o Banco de Dados PostgreSQL (Supabase) ---
+// Use variáveis de ambiente para esta string em produção!
+const DATABASE_URL = process.env.DATABASE_URL || 'postgresql://postgres:[trabalhoquarta]@db.frqtqgyewnycqwxbquxl.supabase.co:5432/postgres';
+// Substitua 'SUA_SENHA_DO_SUPABASE' e a URL pela sua string de conexão do Supabase
+
+const pool = new Pool({
+    connectionString: DATABASE_URL,
+    // ssl: { // Necessário para conexão com Supabase (cloud)
+    //     rejectUnauthorized: false // Desativar para desenvolvimento, reativar/configurar para produção
+    // }
+});
+
+// Testar a conexão
+pool.query('SELECT NOW()')
+    .then(res => console.log('Conectado ao PostgreSQL do Supabase!', res.rows[0]))
+    .catch(err => console.error('Erro ao conectar ao PostgreSQL do Supabase:', err));
 
 // --- Middlewares ---
-// Essencial para que o Express consiga interpretar o corpo (body) de requisições em formato JSON
 app.use(express.json());
 
 // --- ROTAS DO CRUD ---
 
 // 1. READ (GET All) - Listar todos os recursos
-app.get('/resources', (req, res) => {
-  console.log(`[Servidor na porta ${PORT}] Requisição GET /resources recebida.`);
-  res.status(200).json(resources);
+app.get('/resources', async (req, res) => {
+    console.log(`[Servidor na porta ${PORT}] Requisição GET /resources recebida.`);
+    try {
+        const result = await pool.query('SELECT id, name, description, stock FROM resources ORDER BY id');
+        res.status(200).json(result.rows);
+    } catch (error) {
+        console.error('Erro ao buscar recursos do PostgreSQL:', error);
+        res.status(500).json({ message: "Erro interno do servidor ao buscar recursos." });
+    }
 });
 
 // 2. READ (GET by ID) - Buscar um recurso específico
-app.get('/resources/:id', (req, res) => {
-  const id = parseInt(req.params.id);
-  console.log(`[Servidor na porta ${PORT}] Requisição GET /resources/${id} recebida.`);
-  
-  const resource = resources.find(r => r.id === id);
-  
-  if (resource) {
-    res.status(200).json(resource);
-  } else {
-    res.status(404).json({ message: "Recurso não encontrado." });
-  }
+app.get('/resources/:id', async (req, res) => {
+    const id = req.params.id;
+    console.log(`[Servidor na porta <span class="math-inline">\{PORT\}\] Requisição GET /resources/</span>{id} recebida.`);
+
+    try {
+        const result = await pool.query('SELECT id, name, description, stock FROM resources WHERE id = $1', [id]);
+        const resource = result.rows[0]; // Pega o primeiro (e único) resultado
+
+        if (resource) {
+            res.status(200).json(resource);
+        } else {
+            res.status(404).json({ message: "Recurso não encontrado." });
+        }
+    } catch (error) {
+        console.error('Erro ao buscar recurso por ID do PostgreSQL:', error);
+        res.status(500).json({ message: "Erro interno do servidor ao buscar recurso." });
+    }
 });
 
 // 3. CREATE (POST) - Criar um novo recurso
-app.post('/resources', (req, res) => {
-  console.log(`[Servidor na porta ${PORT}] Requisição POST /resources recebida.`);
-  const { name, description, stock } = req.body;
+app.post('/resources', async (req, res) => {
+    console.log(`[Servidor na porta ${PORT}] Requisição POST /resources recebida.`);
+    const { name, description, stock } = req.body;
 
-  // Validação simples
-  if (!name || !description || stock === undefined) {
-    return res.status(400).json({ message: "Os campos 'name', 'description' e 'stock' são obrigatórios." });
-  }
+    if (!name || !description || stock === undefined) {
+        return res.status(400).json({ message: "Os campos 'name', 'description' e 'stock' são obrigatórios." });
+    }
+    // Se você não usou DEFAULT gen_random_uuid() na tabela, gere o ID aqui:
+    // const id = uuidv4();
 
-  const newResource = {
-    id: nextId++,
-    name: name,
-    description: description,
-    stock: stock
-  };
-
-  resources.push(newResource);
-  res.status(201).json(newResource);
+    try {
+        const result = await pool.query(
+            'INSERT INTO resources (name, description, stock) VALUES ($1, $2, $3) RETURNING id, name, description, stock',
+            [name, description, stock]
+        );
+        res.status(201).json(result.rows[0]);
+    } catch (error) {
+        console.error('Erro ao criar recurso no PostgreSQL:', error);
+        // Erros de validação (ex: stock < 0, se você adicionar essa constraint no DB)
+        if (error.code === '23502') { // Exemplo de código de erro SQL para NOT NULL violation
+             return res.status(400).json({ message: "Dados inválidos: " + error.message });
+        }
+        res.status(500).json({ message: "Erro interno do servidor ao criar recurso." });
+    }
 });
 
 // 4. UPDATE (PUT) - Atualização Completa
-// O método PUT substitui o recurso inteiro. Se você não enviar um campo, ele será perdido (ou definido como nulo).
-app.put('/resources/:id', (req, res) => {
-  const id = parseInt(req.params.id);
-  console.log(`[Servidor na porta ${PORT}] Requisição PUT /resources/${id} recebida.`);
-  
-  // Encontra o índice do recurso no nosso "banco de dados"
-  const resourceIndex = resources.findIndex(r => r.id === id);
+app.put('/resources/:id', async (req, res) => {
+    const id = req.params.id;
+    console.log(`[Servidor na porta <span class="math-inline">\{PORT\}\] Requisição PUT /resources/</span>{id} recebida.`);
 
-  // Se o índice for -1, significa que o recurso não foi encontrado
-  if (resourceIndex === -1) {
-    return res.status(404).json({ message: "Recurso não encontrado para atualização." });
-  }
-
-  // Pega os dados do corpo da requisição
-  const { name, description, stock } = req.body;
-
-  // Validação para garantir que todos os campos foram enviados
-  if (!name || !description || stock === undefined) {
-    return res.status(400).json({ message: "Para o método PUT, todos os campos ('name', 'description', 'stock') são obrigatórios." });
-  }
-
-  // Cria o novo objeto de recurso atualizado
-  const updatedResource = {
-    id: id, // Mantém o mesmo id
-    name: name,
-    description: description,
-    stock: stock
-  };
-
-  // Substitui o objeto antigo pelo novo no array
-  resources[resourceIndex] = updatedResource;
-
-  // Retorna o recurso que foi atualizado
-  res.status(200).json(updatedResource);
-});
-
-
-// 5. UPDATE (PATCH) - Atualização Parcial (MAIS RECOMENDADO)
-// O método PATCH atualiza apenas os campos que foram enviados na requisição.
-app.patch('/resources/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    console.log(`[Servidor na porta ${PORT}] Requisição PATCH /resources/${id} recebida.`);
-    
-    const resourceIndex = resources.findIndex(r => r.id === id);
-
-    if (resourceIndex === -1) {
-        return res.status(404).json({ message: "Recurso não encontrado para atualização." });
+    const { name, description, stock } = req.body;
+    if (!name || !description || stock === undefined) {
+        return res.status(400).json({ message: "Para o método PUT, todos os campos ('name', 'description', 'stock') são obrigatórios." });
     }
 
-    // Pega o objeto original
-    const originalResource = resources[resourceIndex];
+    try {
+        const result = await pool.query(
+            'UPDATE resources SET name = $1, description = $2, stock = $3 WHERE id = $4 RETURNING id, name, description, stock',
+            [name, description, stock, id]
+        );
+        const updatedResource = result.rows[0];
 
-    // Pega as atualizações do corpo da requisição
-    const updates = req.body;
-
-    // Mescla o objeto original com as atualizações.
-    // Os campos em 'updates' sobrescreverão os campos em 'originalResource'.
-    const patchedResource = { ...originalResource, ...updates };
-
-    // Atualiza o recurso no array
-    resources[resourceIndex] = patchedResource;
-
-    res.status(200).json(patchedResource);
+        if (updatedResource) {
+            res.status(200).json(updatedResource);
+        } else {
+            res.status(404).json({ message: "Recurso não encontrado para atualização." });
+        }
+    } catch (error) {
+        console.error('Erro ao atualizar recurso (PUT) no PostgreSQL:', error);
+        res.status(500).json({ message: "Erro interno do servidor ao atualizar recurso." });
+    }
 });
 
+// 5. UPDATE (PATCH) - Atualização Parcial
+app.patch('/resources/:id', async (req, res) => {
+    const id = req.params.id;
+    console.log(`[Servidor na porta <span class="math-inline">\{PORT\}\] Requisição PATCH /resources/</span>{id} recebida.`);
 
-// 6. DELETE - Deletar um recurso
-app.delete('/resources/:id', (req, res) => {
-    const id = parseInt(req.params.id);
-    console.log(`[Servidor na porta ${PORT}] Requisição DELETE /resources/${id} recebida.`);
-    
-    const initialLength = resources.length;
-    // Filtra o array, mantendo todos os recursos EXCETO o que tem o ID correspondente
-    resources = resources.filter(r => r.id !== id);
+    const { name, description, stock } = req.body;
+    // Construir a query dinamicamente para PATCH
+    let queryParts = [];
+    let queryParams = [];
+    let paramIndex = 1;
 
-    if (resources.length < initialLength) {
-        // Se o tamanho do array diminuiu, a deleção foi bem-sucedida
-        res.status(204).send(); // 204 No Content é uma resposta padrão para delete bem-sucedido
-    } else {
-        res.status(404).json({ message: "Recurso não encontrado para deleção." });
+    if (name !== undefined) {
+        queryParts.push(`name = $${paramIndex++}`);
+        queryParams.push(name);
+    }
+    if (description !== undefined) {
+        queryParts.push(`description = $${paramIndex++}`);
+        queryParams.push(description);
+    }
+    if (stock !== undefined) {
+        queryParts.push(`stock = $${paramIndex++}`);
+        queryParams.push(stock);
+    }
+
+    if (queryParts.length === 0) {
+        return res.status(400).json({ message: "Nenhum campo para atualizar foi fornecido." });
+    }
+
+    queryParams.push(id); // O ID é sempre o último parâmetro
+
+    try {
+        const result = await pool.query(
+            `UPDATE resources SET ${queryParts.join(', ')} WHERE id = $${paramIndex} RETURNING id, name, description, stock`,
+            queryParams
+        );
+        const patchedResource = result.rows[0];
+
+        if (patchedResource) {
+            res.status(200).json(patchedResource);
+        } else {
+            res.status(404).json({ message: "Recurso não encontrado para atualização." });
+        }
+    } catch (error) {
+        console.error('Erro ao atualizar recurso (PATCH) no PostgreSQL:', error);
+        res.status(500).json({ message: "Erro interno do servidor ao atualizar recurso." });
     }
 });
 
 
 // --- Iniciar o Servidor ---
 app.listen(PORT, () => {
-  console.log(`Servidor de Recursos rodando na porta ${PORT}`);
-  console.log('Endpoints disponíveis:');
-  console.log('  GET    /resources');
-  console.log('  GET    /resources/:id');
-  console.log('  POST   /resources');
-  console.log('  PUT    /resources/:id  (Atualização completa)');
-  console.log('  PATCH  /resources/:id (Atualização parcial)');
-  console.log('  DELETE /resources/:id');
+    console.log(`Servidor de Recursos rodando na porta ${PORT}`);
+    console.log('Endpoints disponíveis:');
+    console.log('  GET    /resources');
+    console.log('  GET    /resources/:id');
+    console.log('  POST   /resources');
+    console.log('  PUT    /resources/:id  (Atualização completa)');
+    console.log('  PATCH  /resources/:id (Atualização parcial)');
+    console.log('  DELETE /resources/:id');
 });
