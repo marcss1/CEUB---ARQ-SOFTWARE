@@ -162,6 +162,24 @@ app.patch('/resources/:id', async (req, res) => {
         res.status(500).json({ message: "Erro interno do servidor ao atualizar recurso." });
     }
 });
+// 6. DELETE - Deletar um recurso
+app.delete('/resources/:id', async (req, res) => {
+    const id = req.params.id;
+    console.log(`[Servidor na porta <span class="math-inline">\{PORT\}\] Requisição DELETE /resources/</span>{id} recebida.`);
+
+    try {
+        const result = await pool.query('DELETE FROM resources WHERE id = $1 RETURNING id', [id]);
+
+        if (result.rowCount > 0) { // Verifica se alguma linha foi afetada
+            res.status(204).send(); // 204 No Content
+        } else {
+            res.status(404).json({ message: "Recurso não encontrado para deleção." });
+        }
+    } catch (error) {
+        console.error('Erro ao deletar recurso no PostgreSQL:', error);
+        res.status(500).json({ message: "Erro interno do servidor ao deletar recurso." });
+    }
+});
 
 
 // --- Iniciar o Servidor ---
