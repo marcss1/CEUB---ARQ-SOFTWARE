@@ -1,3 +1,5 @@
+// api-gateway/index.js - VERSÃO CORRIGIDA E FINAL
+
 const express = require('express');
 const proxy = require('express-http-proxy');
 const app = express();
@@ -6,80 +8,58 @@ const PORT = process.env.PORT || 3000;
 
 // Lista de servidores para balanceamento
 const servers = [
-  'https://simulacao-server1.free.beeceptor.com', // Server1
-  'https://simulacao-replica1.free.beeceptor.com'  // Replica1
+  'http://localhost:4000',
+  // 'http://localhost:4001' // Você pode adicionar réplicas aqui no futuro
 ];
 
-// Índice do servidor atual para o round-robin
+// Índice atual do servidor
 let currentServer = 0;
 
-/**
- * Middleware de Round Robin
- * Seleciona o próximo servidor da lista de forma circular e redireciona a requisição.
- */
-const roundRobin = (req, res, next) => {
-  // Este console.log agora deve ser impresso a cada chamada para /resources
-  console.log('Middleware roundRobin executado.');
-
-  // Escolhe o servidor de destino
-  const target = servers[currentServer];
-
-  // Avança o índice para o próximo servidor, voltando ao início se chegar ao fim da lista
-  currentServer = (currentServer + 1) % servers.length;
-
-  console.log(`Redirecionando a requisição de '${req.originalUrl}' para: ${target}`);
-
-  // Usa o 'express-http-proxy' para encaminhar a requisição
-  // A requisição original (req) é passada para o middleware do proxy
-  return proxy(target, {
-    // Mantém o caminho original da URL da requisição
-    proxyReqPathResolver: (req) => req.url
-  })(req, res, next);
-};
-
-// --- CONFIGURAÇÃO DO EXPRESS ---
-
-// Middleware para fazer o parsing do corpo da requisição como JSON
+// Middleware para o Express entender JSON
 app.use(express.json());
 
-
-// --- DEFINIÇÃO DAS ROTAS (ORDEM CORRETA) ---
-
-// 1. Rotas mais específicas devem vir primeiro.
-// Rota de verificação de status (health check). Não passa pelo balanceador.
+// Rota de health check (não usa proxy)
 app.get('/health', (req, res) => {
-  res.status(200).json({
+  res.json({
     status: 'OK',
-    loadBalancerOnline: true,
-    configuredServers: servers,
-    endpoints: [
-      'GET /health - Verifica o status do API Gateway',
-      'GET /resources - Lista todos os recursos (balanceado)',
-      'POST /resources - Cria um novo recurso (balanceado)',
-      'GET /resources/:id - Busca um recurso específico (balanceado)',
-      'PUT /resources/:id - Atualiza um recurso (balanceado)',
-      'DELETE /resources/:id - Deleta um recurso (balanceado)'
-    ]
+    servers: servers,
   });
 });
 
-// 2. Rotas genéricas ou que usam curingas vêm depois.
-// Aplica o middleware de round-robin para qualquer requisição em '/resources/*'
-app.use('/resources', roundRobin);
+// A maneira correta de fazer Round-Robin com esta biblioteca.
+// Criamos UM middleware de proxy, e ele resolve o host dinamicamente.
+const proxyMiddleware = proxy(() => {
+    // 1. Escolhe o servidor de destino
+    const target = servers[currentServer];
+    
+    // 2. Prepara o índice para a PRÓXIMA requisição
+    currentServer = (currentServer + 1) % servers.length;
+    
+    console.log(`[API Gateway] Redirecionando para: ${target}`);
+    
+    // 3. Retorna o servidor de destino para o proxy usar
+    return target;
+}, {
+    // Esta função garante que a URL original (ex: /resources/2) seja mantida
+    proxyReqPathResolver: (req) => {
+        return req.originalUrl;
+    }
+});
 
-// 3. Middlewares de erro ou "catch-all" devem ser os últimos.
-// Se nenhuma das rotas acima for correspondida, esta será executada.
+// Agora, aplicamos este único middleware a todas as rotas que queremos redirecionar.
+app.use('/resources', proxyMiddleware);
+
+
+// ROTA CATCH-ALL: Esta rota só será acionada se NENHUMA das rotas acima corresponder.
 app.use((req, res) => {
+  console.log(`[API Gateway] Rota não encontrada: ${req.method} ${req.originalUrl}`);
   res.status(404).json({
-    error: 'Endpoint não encontrado',
-    message: `A rota '${req.originalUrl}' com o método '${req.method}' não existe.`,
-    availableRoutes: ['/health', '/resources']
+    error: 'Endpoint não encontrado no Gateway',
+    message: 'Use um endpoint válido como /resources ou /resources/:id'
   });
 });
 
-
-// --- INICIALIZAÇÃO DO SERVIDOR ---
 app.listen(PORT, () => {
-  console.log(`API Gateway (Load Balancer) rodando na porta ${PORT}`);
-  console.log(`Servidores configurados para balanceamento: ${servers.join(', ')}`);
+  console.log(`API Gateway (v2 - Corrigido) rodando na porta ${PORT}`);
+  console.log(`Servidores de backend configurados: ${servers.join(', ')}`);
 });
